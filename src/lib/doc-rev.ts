@@ -1,8 +1,12 @@
 import { createMiddleware } from "@tanstack/react-start";
+import { parseSessCookie } from "./session-cookie";
 
 const REV_HEADER = "x-dockit-rev";
 
-let seen = 0;
+// null until this client has actually seen a document. 0 is a real revision,
+// so the two cannot share a value: asserting 0 from a client that never loaded
+// anything conflicts with every non-empty portal.
+let seen: number | null = null;
 
 export function asDocRev(raw: unknown): number {
 	const n = Number(raw);
@@ -10,7 +14,7 @@ export function asDocRev(raw: unknown): number {
 	return Math.floor(n);
 }
 
-export function readDocRev(): number {
+export function readDocRev(): number | null {
 	return seen;
 }
 
@@ -30,11 +34,27 @@ export function isConflict(err: unknown): boolean {
 	return true;
 }
 
+/**
+ * Is this request from a signed-in client, rather than a login payload?
+ *
+ * A payload token used to be the only answer. HttpOnly sessions leave the
+ * client with no token to send, so the cookie counts too — otherwise every
+ * remote deployment skips the conflict check entirely.
+ */
+function signedIn(
+	data: { token?: unknown } | null | undefined,
+	request?: { headers?: { get?: (k: string) => string | null } } | null,
+): boolean {
+	if (String(data?.token ?? "").trim()) return true;
+	const cookie = typeof request?.headers?.get === "function" ? request.headers.get("cookie") : null;
+	return Boolean(parseSessCookie(cookie));
+}
+
 export function takeExpectedRev(
 	data: { token?: unknown; rev?: unknown } | null | undefined,
 	request?: { headers?: { get?: (k: string) => string | null } } | null,
 ): number | undefined {
-	if (!String(data?.token ?? "").trim()) return undefined;
+	if (!signedIn(data, request)) return undefined;
 	if (data && "rev" in data && data.rev != null && data.rev !== "") return asDocRev(data.rev);
 	const header = typeof request?.headers?.get === "function" ? request.headers.get(REV_HEADER) : null;
 	if (header && /^\d+$/.test(header)) return Number(header);
@@ -52,7 +72,10 @@ export function bumpDocRev(doc: { rev?: number }) {
 }
 
 export const attachDocRev = createMiddleware({ type: "function" }).client(async ({ next }) => {
+	const rev = readDocRev();
+	// Nothing loaded yet (a fresh sign-in page): assert no revision at all.
+	if (rev == null) return next();
 	return next({
-		headers: { [REV_HEADER]: String(readDocRev()) },
+		headers: { [REV_HEADER]: String(rev) },
 	});
 });
