@@ -127,7 +127,11 @@ export function issueToken(userId: string) {
   });
   return token;
 }
-export const tokenField = z.string().min(1);
+// Authentication resolves through tok(), which prefers the session cookie.
+// Under HttpOnly sessions the client holds no token to send, so requiring one
+// here rejects a perfectly authenticated request before the handler runs.
+// default("") keeps the parsed type `string` for every handler reading data.token.
+export const tokenField = z.string().max(200).default("");
 export function tok(
   data: unknown,
   request: { headers?: { get?: (k: string) => string | null } } | null | undefined,
